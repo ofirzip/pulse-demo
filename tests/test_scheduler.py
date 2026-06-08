@@ -11,7 +11,8 @@ from scheduler import (
 
 
 @patch("scheduler.EventConsumer")
-def test_drain_event_queue_stops_on_empty_batch(MockConsumer):
+@patch("scheduler.ensure_topic_exists")
+def test_drain_event_queue_stops_on_empty_batch(mock_ensure, MockConsumer):
     mock_consumer = MockConsumer.return_value
     mock_consumer.process_batch.side_effect = [5, 3, 0]
 
@@ -19,10 +20,12 @@ def test_drain_event_queue_stops_on_empty_batch(MockConsumer):
 
     assert total == 8
     assert mock_consumer.process_batch.call_count == 3
+    mock_ensure.assert_called_once()
 
 
 @patch("scheduler.EventConsumer")
-def test_drain_event_queue_respects_max_batches(MockConsumer):
+@patch("scheduler.ensure_topic_exists")
+def test_drain_event_queue_respects_max_batches(mock_ensure, MockConsumer):
     mock_consumer = MockConsumer.return_value
     mock_consumer.process_batch.return_value = 10
 
@@ -30,6 +33,7 @@ def test_drain_event_queue_respects_max_batches(MockConsumer):
 
     assert total == 30
     assert mock_consumer.process_batch.call_count == 3
+    mock_ensure.assert_called_once()
 
 
 @patch("scheduler.SessionRepository")
@@ -53,12 +57,15 @@ def test_aggregate_sessions_returns_zero_when_no_sessions(mock_list, MockRepo):
     assert aggregate_sessions() == 0
 
 
+@patch("scheduler.EventPublisher")
+@patch("scheduler.list_existing_reports")
 @patch("scheduler.ReportExporter")
 @patch("scheduler.results_to_csv")
 @patch("scheduler.run_aggregation_query")
-def test_export_daily_report_uses_given_date(mock_query, mock_csv, MockExporter):
+def test_export_daily_report_uses_given_date(mock_query, mock_csv, MockExporter, mock_list_reports, MockPublisher):
     mock_query.return_value = [{"event_type": "click", "count": 5}]
     mock_csv.return_value = "event_type,count\nclick,5\n"
+    mock_list_reports.return_value = 3
     MockExporter.return_value.export.return_value = "gs://bucket/daily/pulse-report-2026-06-07.csv"
 
     uri = export_daily_report("2026-06-07")
@@ -67,6 +74,10 @@ def test_export_daily_report_uses_given_date(mock_query, mock_csv, MockExporter)
     mock_query.assert_called_once()
     sql_arg = mock_query.call_args[0][0]
     assert "2026-06-07" in sql_arg
+    mock_list_reports.assert_called_once()
+    MockPublisher.return_value.send.assert_called_once_with(
+        {"event_type": "report_generated", "report_uri": "gs://bucket/daily/pulse-report-2026-06-07.csv"}
+    )
 
 
 @patch("scheduler.export_daily_report")

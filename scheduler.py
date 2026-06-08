@@ -35,6 +35,7 @@ ORDER BY event_count DESC
 
 def drain_event_queue(max_batches: int = 10) -> int:
     """Drain pending Pub/Sub events into BigQuery. Returns total events processed."""
+    ensure_topic_exists()
     consumer = EventConsumer()
     total = 0
     for _ in range(max_batches):
@@ -67,13 +68,17 @@ def export_daily_report(report_date: str | None = None) -> str:
 
     # Direct-call path: uses module-level functions
     rows = run_aggregation_query(sql)
-    csv_content = results_to_csv(rows)
-    logger.info("Direct path: built CSV with %d rows", len(rows))
+    csv_content = results_to_csv(rows)  # noqa: F841 — intentional: exercises the direct SDK call path for the scanner; ReportExporter.export() does the actual upload
+    existing_count = list_existing_reports()
+    logger.info("Direct path: built CSV with %d rows (%d existing reports)", len(rows), existing_count)
 
     # Abstracted path: exercises the ReportExporter class interface
     exporter = ReportExporter()
     uri = exporter.export(sql, blob_name)
     logger.info("Exported daily report for %s → %s", report_date, uri)
+
+    publisher = EventPublisher()
+    publisher.send({"event_type": "report_generated", "report_uri": uri})
     return uri
 
 
