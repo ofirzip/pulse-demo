@@ -6,6 +6,7 @@ import logging
 from datetime import date, datetime, timedelta, timezone
 
 from consumer import EventConsumer
+from enrichment import EventEnricher, enrich_event
 from ingestor import EventPublisher, ensure_topic_exists
 from report_exporter import (
     ReportExporter,
@@ -59,6 +60,28 @@ def aggregate_sessions(since_hours: int = 24) -> int:
     return len(sessions)
 
 
+def enrich_active_events(since_hours: int = 24) -> int:
+    """Categorize recent active sessions with the LLM enrichment service.
+
+    Feeds the full session payload (``user_id`` + properties) to the model so
+    each session gets an auto-assigned engagement category.
+    """
+    since = datetime.now(timezone.utc) - timedelta(hours=since_hours)
+    sessions = list_active_sessions(since)
+    if not sessions:
+        return 0
+
+    # Direct-call path: exercises the top-level LLM call
+    sample_category = enrich_event(sessions[0])  # noqa: F841 — direct SDK path for the scanner
+    logger.info("Sample session categorized as %s", sample_category)
+
+    # Abstracted path: enrichment hidden inside EventEnricher
+    enricher = EventEnricher()
+    enriched = enricher.enrich_batch(sessions)
+    logger.info("Enriched %d active sessions", len(enriched))
+    return len(enriched)
+
+
 def export_daily_report(report_date: str | None = None) -> str:
     """Query yesterday's aggregates and upload as a CSV to GCS."""
     if report_date is None:
@@ -87,12 +110,21 @@ def run_daily_aggregation(event: dict, context: object) -> dict:
     logger.info("Starting daily aggregation job, trigger: %s", event)
     events_drained = drain_event_queue()
     sessions_synced = aggregate_sessions()
+    events_enriched = enrich_active_events()
     report_uri = export_daily_report()
     result = {
         "status": "ok",
         "events_drained": events_drained,
         "sessions_synced": sessions_synced,
+        "events_enriched": events_enriched,
         "report_uri": report_uri,
     }
     logger.info("Daily aggregation complete: %s", result)
     return result
+
+
+def http_daily_aggregation(request) -> tuple[str, int]:
+    """HTTP Cloud Functions entry point — wraps run_daily_aggregation for HTTP triggers."""
+    import json
+    result = run_daily_aggregation({}, None)
+    return json.dumps(result), 200
