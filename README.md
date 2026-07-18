@@ -11,6 +11,8 @@ Events → ingestor.py → Pub/Sub → consumer.py → BigQuery
                                                      ↓
                         session_store.py ← Firestore  ↓
                                                      ↓
+                        enrichment.py → Anthropic LLM  ↓
+                                                     ↓
                         report_exporter.py → GCS ← BigQuery
                                 ↑
                           scheduler.py (Cloud Functions entry point)
@@ -23,6 +25,7 @@ Events → ingestor.py → Pub/Sub → consumer.py → BigQuery
 | `ingestor.py` | Pub/Sub | Publish usage events to a topic |
 | `consumer.py` | Pub/Sub, BigQuery | Pull events and write to raw table |
 | `session_store.py` | Firestore | Read/write user session state |
+| `enrichment.py` | Anthropic LLM (external) | Categorize events via an external model API |
 | `report_exporter.py` | BigQuery, Cloud Storage | Query aggregates and upload CSV reports |
 | `scheduler.py` | — | Cloud Functions entry point, orchestrates the pipeline |
 

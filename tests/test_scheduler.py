@@ -5,6 +5,7 @@ import pytest
 from scheduler import (
     aggregate_sessions,
     drain_event_queue,
+    enrich_active_events,
     export_daily_report,
     run_daily_aggregation,
 )
@@ -81,11 +82,13 @@ def test_export_daily_report_uses_given_date(mock_query, mock_csv, MockExporter,
 
 
 @patch("scheduler.export_daily_report")
+@patch("scheduler.enrich_active_events")
 @patch("scheduler.aggregate_sessions")
 @patch("scheduler.drain_event_queue")
-def test_run_daily_aggregation_returns_summary(mock_drain, mock_sessions, mock_export):
+def test_run_daily_aggregation_returns_summary(mock_drain, mock_sessions, mock_enrich, mock_export):
     mock_drain.return_value = 42
     mock_sessions.return_value = 7
+    mock_enrich.return_value = 5
     mock_export.return_value = "gs://bucket/daily/report.csv"
 
     result = run_daily_aggregation({}, None)
@@ -93,4 +96,35 @@ def test_run_daily_aggregation_returns_summary(mock_drain, mock_sessions, mock_e
     assert result["status"] == "ok"
     assert result["events_drained"] == 42
     assert result["sessions_synced"] == 7
+    assert result["events_enriched"] == 5
     assert result["report_uri"] == "gs://bucket/daily/report.csv"
+
+
+@patch("scheduler.EventEnricher")
+@patch("scheduler.enrich_event")
+@patch("scheduler.list_active_sessions")
+def test_enrich_active_events_uses_direct_and_abstracted_paths(mock_list, mock_enrich_event, MockEnricher):
+    mock_list.return_value = [
+        {"user_id": "u1", "plan": "pro"},
+        {"user_id": "u2", "plan": "free"},
+    ]
+    mock_enrich_event.return_value = "engagement"
+    MockEnricher.return_value.enrich_batch.return_value = [
+        {"user_id": "u1", "category": "engagement"},
+        {"user_id": "u2", "category": "churn_risk"},
+    ]
+
+    count = enrich_active_events()
+
+    assert count == 2
+    mock_enrich_event.assert_called_once()  # direct path on the first session
+    MockEnricher.return_value.enrich_batch.assert_called_once()  # abstracted path
+
+
+@patch("scheduler.EventEnricher")
+@patch("scheduler.enrich_event")
+@patch("scheduler.list_active_sessions")
+def test_enrich_active_events_returns_zero_when_no_sessions(mock_list, mock_enrich_event, MockEnricher):
+    mock_list.return_value = []
+    assert enrich_active_events() == 0
+    mock_enrich_event.assert_not_called()
