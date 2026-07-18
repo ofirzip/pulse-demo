@@ -61,18 +61,56 @@ The individual observations compose into one narrative spanning VAST's aspects:
 Expect **combo penalties** to stack where sets are worse together (e.g. a hardcoded secret
 in a production workload).
 
-## Expected result on today's engine
+## Expected result on today's engine (pre-scan hypothesis)
 
-Running against the current engine, the **visibly firing** items are:
+Before scanning we expected the **visibly firing** items to be `saas_usage` (C1), the `blast`
+over-grant/drift family (C5 + B1), and the absence of `least_privilege_aligned` (B3). The
+actual Track 1 results below **corrected two of these** — see the ⚠️ notes.
 
-- **C1** — `sensitivity.saas_usage` (Anthropic, PII) — *verified via S1*.
-- **C5 + B1** — the `blast` over-grant / drift family (`unused_permissions`,
-  `broad_service_grant`) once both repos are scanned (S2 + S3).
-- **B3** — the `blast.least_privilege_aligned` positive should be **absent**.
+---
 
-Everything marked `planned` above is seeded (its scan *input* is present) and should surface
-automatically as those detectors ship — no code change needed at that point.
+## Track 1 — Observed results (2026-07-18, static scan, no deploy)
+
+**Scans run** (both repos merged to `main`, cloned by VAST):
+- `vast code scan-repo --repo ofirzip/pulse-demo --cloud gcp` → scan `ada6a890-…`
+- `vast code scan-repo --repo ofirzip/pulse-demo --ignore tests` (AllScanners, incl. SaaS) → scan `13b9cef0-…`
+- `vast code scan-repo --repo ofirzip/pulse-infra --cloud gcp` → scan `b82b20c7-…`
+- `vast code assess-risk <repo>` / `vast code get-risk <repo>` / `vast code get-policy <repo>`
+
+| # | Expected | Observed (Track 1) | Verdict |
+|---|---|---|---|
+| C1 | `sensitivity.saas_usage` fires | **Anthropic detected** in SaaS inventory (`api.anthropic.com`, pkg `anthropic`, `data_shared: pii`, from `enrichment.py`+`requirements.txt`). But `saas_usage` is **informational** → **not** a scored risk finding; `get-risk` = `none`, `findings: []`. | ⚠️ **Detected, not flagged** (inventory only) |
+| C2 | `llm_data_sharing` / `saas_pii_egress` | Not surfaced (planned detectors). Input present (PII in prompt). | ✅ as expected (planned) |
+| C3 | `hardcoded_secret` | Not surfaced (Secrets scanner coming-soon). | ✅ as expected (planned) |
+| C4 | `secrets_to_third_party` | Not surfaced (planned). | ✅ as expected (planned) |
+| C5 | narrow used-permission set | **Confirmed** — generated least-privilege role = **7 perms**: `pubsub.topics.publish/create`, `pubsub.subscriptions.consume`, `bigquery.jobs.create`, `bigquery.tables.updateData`, `storage.objects.create/delete`. | ✅ confirmed |
+| B1 | `unused_permissions` / `broad_service_grant` | **Not surfaced.** `iac_frameworks: []` — the Terraform IAM grants were **not extracted**; GCP IaC grant-parsing isn't wired. Static scan cannot see the over-grant. | ⚠️ **needs Track 2** (live `check-drift`) |
+| B2 | `admin_grant` | Not surfaced (planned + no IaC extraction). | ✅ as expected |
+| B3 | `least_privilege_aligned` absent | N/A — no blast finding either way from the static scan. | — deferred to Track 2 |
+| B4 | `public_data_store` / `public_workload` | Not surfaced. IaC config (`allUsers` bucket) not parsed. | ✅ as expected (planned) |
+| B5 | `public_workload` / `unauthenticated_endpoint` | Not surfaced. `allUsers` invoker not parsed. | ✅ as expected (planned) |
+| B6 | `unencrypted_data` | Not surfaced. | ✅ as expected (planned) |
+
+### Key learnings
+1. **`saas_usage` is inventory, not a risk finding.** VAST *catalogs* the Anthropic/PII integration
+   (visible via `get-repo` → `third_party_api` and the web Observations/External-APIs tab) but the
+   CLI `assess-risk`/`get-risk` show only *risky* findings, so it reads as `none`. The scoring
+   egress observations that would flag it are `planned`.
+2. **GCP Terraform grant-extraction is not wired.** Scanning `pulse-infra` yielded `iac_frameworks: []`
+   and extracted **no** IaC IAM permissions — the `roles/owner` / `allUsers` grants were invisible to
+   the static scan. (The GCP "usage" VAST *did* report for pulse-infra came from the vendored
+   `functions/daily_aggregation/*.py` copies, not the `.tf` files.) → the over-privilege/drift story
+   requires **Track 2** (`vast mapping check-drift --cloud gcp --project …`).
+3. **Live plumbing already exists.** VAST already maps `pulse-demo → pulse-runner@…` and IAM
+   Recommender runs against the live project (`recommender_ran: true`), currently reporting the SA as
+   *right-sized* — because the `roles/owner` grant isn't deployed. Deploying it (Track 2) is what
+   would flip this to `excess`.
+
+**Net:** on today's GCP engine, static Track 1 confirms the **code-side inputs** (SaaS integration
+detected, narrow used-permissions extracted) but produces **no scored findings** — every planted
+observation is informational, `planned`, or (for the IaC grants) not yet extracted. The scored
+over-privilege result requires Track 2.
 
 ---
 _Last updated: 2026-07-18. Line numbers reference commits `pulse-demo@f8e51e9`,
-`pulse-infra@17a5729`._
+`pulse-infra@17a5729`. Track 1 observed against VAST `APT` @ current checkout._
