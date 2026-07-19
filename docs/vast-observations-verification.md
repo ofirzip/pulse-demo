@@ -128,5 +128,41 @@ observation is informational, `planned`, or (for the IaC grants) not yet extract
 over-privilege result requires Track 2.
 
 ---
-_Last updated: 2026-07-18. Line numbers reference commits `pulse-demo@f8e51e9`,
-`pulse-infra@17a5729`. Track 1 observed against VAST `APT` @ current checkout._
+
+## Code-scan findings — Observed results (2026-07-19, static scan, no deploy)
+
+After planting the C6–C9 calls and wiring the **GCP risk classifier** (companion APT change
+`feat/gcp-risk-classification`, ofirzip/APT#181), a fresh-clone code scan now produces **scored
+findings from the code itself** — the gap Track 1 flagged (Key learning 1) is closed for the GCP
+permission calls.
+
+**Scan run** (pulse-demo `main` after ofirzip/pulse-demo#4, cloned by VAST):
+- `vast code scan-repo --repo ofirzip/pulse-demo --cloud gcp` → scan `3daf68aa-…`
+- `vast code assess-risk ofirzip/pulse-demo` → **Overall risk: CRITICAL**
+- `vast code get-risk "ofirzip/pulse-demo"` → 4 findings below
+
+| # | Expected | Observed (`get-risk`) | Verdict |
+|---|---|---|---|
+| C6 | `sensitivity.high_service` | `secretmanager` `secrets.access` → `secrets_access` · **high** | ✅ fires |
+| C7 | `blast.write_delete` | `storage` `objects.delete` → `data_destruction` · **high** | ✅ fires |
+| C8 | `blast.privilege_escalation` | `resourcemanager` `projects.setiampolicy` → `privilege_escalation` · **critical** | ✅ fires |
+| C9 | `sensitivity.medium_service` | `bigquery` `jobs.create` → `data_exfiltration` · **high** | ✅ fires |
+
+Full catalog observations on the repo (`get-repo` / Observations tab): `exploitability.production`
+(lifecycle — code is mapped to a live workload), plus the four above (`blast.privilege_escalation`,
+`blast.write_delete`, `sensitivity.high_service`, `sensitivity.medium_service`).
+
+### Key learnings
+1. **The code scan is now a finding generator.** Track 1's `get-risk = none` became `CRITICAL` with
+   no infra deploy and no drift check — the four calls are classified straight from the `GCPPermission`
+   scan. This required routing `gcp_calls` through `assess_risk_for_repo` (it previously read only
+   `AWSPermission`/`aws_calls`) and reconciling the registry keys with the extractor's canonical ops.
+2. **`set_iam_policy` needed extractor support.** The self-grant (C8) only surfaced after adding a
+   `resourcemanager` service to the GCP call extractor; the other three services (storage, bigquery,
+   secretmanager) were already extracted and just needed the classifier + key reconciliation.
+3. **Hardcoded-secret story preserved.** C6 reads the key from Secret Manager *and* keeps the embedded
+   fallback, so the `hardcoded_secret` input (C3) still stands alongside the new `high_service` finding.
+
+---
+_Last updated: 2026-07-19. Track 1 observed 2026-07-18 (`pulse-demo@f8e51e9`, `pulse-infra@17a5729`).
+Code-scan findings observed against `pulse-demo@main` (post-#4) + VAST `APT` `feat/gcp-risk-classification`._
