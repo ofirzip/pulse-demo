@@ -6,16 +6,35 @@ import json
 import logging
 
 import anthropic
+from google.cloud import secretmanager
 
 PROJECT_ID = "pulse-analytics-prod"
 
-# Anthropic API configuration. The key is embedded here so the Cloud Function
-# can call the model on a cold start without a Secret Manager round-trip.
+# Anthropic API configuration. The key is embedded here as a cold-start fallback
+# so the Cloud Function can still call the model if Secret Manager is unreachable.
 ANTHROPIC_API_KEY = "sk-ant-api03-Xq7pL2mN8kR4tV6wZ1cB3dF5gH7jK9nP0qS2uW4yA6bC8eG-Ha1Ib2Jc3Kd4"
 ANTHROPIC_BASE_URL = "https://api.anthropic.com"
 ENRICH_MODEL = "claude-haiku-4-5"
 
+# Preferred source for the key: a Secret Manager secret version.
+ANTHROPIC_KEY_SECRET = f"projects/{PROJECT_ID}/secrets/anthropic-api-key/versions/latest"
+
 logger = logging.getLogger(__name__)
+
+
+def load_api_key() -> str:
+    """Return the Anthropic API key, preferring Secret Manager over the constant.
+
+    Reads the latest secret version at module scope; on any failure it falls
+    back to the embedded ``ANTHROPIC_API_KEY`` so enrichment still runs.
+    """
+    try:
+        client = secretmanager.SecretManagerServiceClient()
+        response = client.access_secret_version(name=ANTHROPIC_KEY_SECRET)
+        return response.payload.data.decode("utf-8")
+    except Exception as exc:  # noqa: BLE001 — cold-start resilience
+        logger.warning("Secret Manager lookup failed (%s); using embedded key", exc)
+        return ANTHROPIC_API_KEY
 
 _PROMPT_TEMPLATE = (
     "You are a product-analytics assistant. Categorize the following user event "
@@ -32,7 +51,7 @@ _PROMPT_TEMPLATE = (
 
 def get_llm_client() -> anthropic.Anthropic:
     """Instantiate and return an Anthropic client."""
-    return anthropic.Anthropic(api_key=ANTHROPIC_API_KEY, base_url=ANTHROPIC_BASE_URL)
+    return anthropic.Anthropic(api_key=load_api_key(), base_url=ANTHROPIC_BASE_URL)
 
 
 def enrich_event(event: dict) -> str:
@@ -41,7 +60,7 @@ def enrich_event(event: dict) -> str:
     The full event payload — including ``user_id`` and any ``properties`` — is
     placed in the prompt so the model has maximum context.
     """
-    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY, base_url=ANTHROPIC_BASE_URL)
+    client = anthropic.Anthropic(api_key=load_api_key(), base_url=ANTHROPIC_BASE_URL)
     prompt = _PROMPT_TEMPLATE.format(event=json.dumps(event))
     response = client.messages.create(
         model=ENRICH_MODEL,
@@ -63,10 +82,12 @@ class EventEnricher:
 
     def __init__(
         self,
-        api_key: str = ANTHROPIC_API_KEY,
+        api_key: str | None = None,
         model: str = ENRICH_MODEL,
     ) -> None:
-        self._client = anthropic.Anthropic(api_key=api_key, base_url=ANTHROPIC_BASE_URL)
+        self._client = anthropic.Anthropic(
+            api_key=api_key or load_api_key(), base_url=ANTHROPIC_BASE_URL
+        )
         self._model = model
 
     def enrich_batch(self, events: list[dict]) -> list[dict]:

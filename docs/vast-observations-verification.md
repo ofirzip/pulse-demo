@@ -33,6 +33,20 @@ S2 supplies the *used* permissions; the gap is the drift.
 | C3 | Hardcoded API key | `enrichment.py:14` (`ANTHROPIC_API_KEY = "sk-ant-…"`) | `sensitivity.hardcoded_secret` | sensitivity · negative | planned (Secrets scanner coming-soon) | R |
 | C4 | Secret transmitted to 3rd party (key rides the outbound call) | `enrichment.py:35,44,69` (`api_key=ANTHROPIC_API_KEY`) | `sensitivity.secrets_to_third_party` | sensitivity · negative | planned | R |
 | C5 | Narrow GCP permission usage (baseline for drift) | `consumer.py`, `session_store.py`, `report_exporter.py` (pubsub/bq/firestore/gcs calls only) | *(input to* `blast.unused_permissions` *)* | blast | **active** | S2 — used-permission set should be small |
+| C6 | Reads Anthropic key from Secret Manager | `enrichment.py` (`load_api_key` → `access_secret_version`) | `sensitivity.high_service` | sensitivity · negative | **active** † | S2 → R (`secrets_access` risk category) |
+| C7 | Report retention deletes GCS objects | `report_exporter.py` (`delete_old_report` → `blob.delete`) | `blast.write_delete` | blast · negative | **active** † | S2 → R (`data_destruction`) |
+| C8 | Pipeline self-grants a project role | `scheduler.py` (`ensure_runner_permissions` → `resourcemanager` `set_iam_policy`) | `blast.privilege_escalation` | blast · negative | **active** † | S2 → R (`privilege_escalation`) |
+| C9 | Bulk BigQuery read of raw events | `report_exporter.py`/`scheduler.py` (`bigquery` `query` → `jobs.create`) | `sensitivity.medium_service` | sensitivity · negative | **active** † | S2 → R (`data_exfiltration`) |
+
+> **†** C6–C9 fire only with the **GCP risk-classification wiring** shipped in the companion
+> APT change (`feat/gcp-risk-classification`): before it, `assess_risk_for_repo` read only
+> `AWSPermission`/`aws_calls` and lower-cased operations, so GCP calls were extracted as
+> *permissions* (visible in the least-privilege policy) but never risk-classified — which is
+> exactly why Track 1 saw `objects.delete`/`bigquery` in the code yet `get-risk = none`.
+> The scan chain is S2 (`GCPPermission` scan) → `assess-risk` → `get-risk`/`R`. C8 also depends
+> on the new `resourcemanager` service in the GCP call extractor (`set_iam_policy` was
+> previously undetected). Registry keys were reconciled to the extractor's canonical op names
+> (`secrets.access`, `jobs.create`, `projects.setiampolicy`).
 
 ---
 
@@ -56,7 +70,9 @@ The individual observations compose into one narrative spanning VAST's aspects:
 > **sensitivity** (user event data in Firestore/BigQuery) → egressed to an **external LLM**
 > (C1/C2) → results land in a **public** bucket (B4, exposure) → served by a **publicly
 > invokable** function (B5, exploitability) → running as an **over-privileged** service
-> account (B1/B2, blast).
+> account (B1/B2, blast) whose privilege the pipeline code itself **widens via a project-IAM
+> self-grant** (C8, blast) and uses to **read** raw events (C9) and **delete** report objects
+> (C7).
 
 Expect **combo penalties** to stack where sets are worse together (e.g. a hardcoded secret
 in a production workload).

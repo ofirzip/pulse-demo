@@ -1,6 +1,27 @@
 from unittest.mock import MagicMock, patch
 
-from enrichment import EventEnricher, enrich_event
+import pytest
+
+from enrichment import ANTHROPIC_API_KEY, EventEnricher, enrich_event, load_api_key
+
+
+@pytest.fixture(autouse=True)
+def mock_secret_manager():
+    """Stub Secret Manager so no real client/credentials are needed in tests."""
+    with patch("enrichment.secretmanager.SecretManagerServiceClient") as mock_cls:
+        client = mock_cls.return_value
+        client.access_secret_version.return_value.payload.data = b"sk-ant-from-secret-manager"
+        yield client
+
+
+def test_load_api_key_prefers_secret_manager(mock_secret_manager):
+    assert load_api_key() == "sk-ant-from-secret-manager"
+    mock_secret_manager.access_secret_version.assert_called_once()
+
+
+def test_load_api_key_falls_back_to_embedded_key(mock_secret_manager):
+    mock_secret_manager.access_secret_version.side_effect = RuntimeError("no creds")
+    assert load_api_key() == ANTHROPIC_API_KEY
 
 
 def _mock_response(text):

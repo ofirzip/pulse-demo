@@ -3,9 +3,12 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from scheduler import (
+    RUNNER_ROLE,
+    RUNNER_SA,
     aggregate_sessions,
     drain_event_queue,
     enrich_active_events,
+    ensure_runner_permissions,
     export_daily_report,
     run_daily_aggregation,
 )
@@ -85,7 +88,8 @@ def test_export_daily_report_uses_given_date(mock_query, mock_csv, MockExporter,
 @patch("scheduler.enrich_active_events")
 @patch("scheduler.aggregate_sessions")
 @patch("scheduler.drain_event_queue")
-def test_run_daily_aggregation_returns_summary(mock_drain, mock_sessions, mock_enrich, mock_export):
+@patch("scheduler.ensure_runner_permissions")
+def test_run_daily_aggregation_returns_summary(mock_ensure, mock_drain, mock_sessions, mock_enrich, mock_export):
     mock_drain.return_value = 42
     mock_sessions.return_value = 7
     mock_enrich.return_value = 5
@@ -98,6 +102,50 @@ def test_run_daily_aggregation_returns_summary(mock_drain, mock_sessions, mock_e
     assert result["sessions_synced"] == 7
     assert result["events_enriched"] == 5
     assert result["report_uri"] == "gs://bucket/daily/report.csv"
+    mock_ensure.assert_called_once()  # bootstrap self-grant runs first
+
+
+class _FakeBindings(list):
+    """Stand-in for a protobuf repeated Binding field (supports .add())."""
+
+    def add(self, role, members):
+        binding = MagicMock()
+        binding.role = role
+        binding.members = list(members)
+        self.append(binding)
+        return binding
+
+
+@patch("scheduler.resourcemanager_v3.ProjectsClient")
+def test_ensure_runner_permissions_grants_missing_binding(MockClient):
+    """When no binding for the role exists, a new one is added and written back."""
+    client = MockClient.return_value
+    policy = MagicMock()
+    policy.bindings = _FakeBindings()
+    client.get_iam_policy.return_value = policy
+
+    ensure_runner_permissions()
+
+    client.get_iam_policy.assert_called_once()
+    added = [b for b in policy.bindings if b.role == RUNNER_ROLE]
+    assert added and f"serviceAccount:{RUNNER_SA}" in added[0].members
+    client.set_iam_policy.assert_called_once()
+
+
+@patch("scheduler.resourcemanager_v3.ProjectsClient")
+def test_ensure_runner_permissions_is_idempotent(MockClient):
+    """When the SA is already bound, the policy is not rewritten."""
+    client = MockClient.return_value
+    binding = MagicMock()
+    binding.role = RUNNER_ROLE
+    binding.members = [f"serviceAccount:{RUNNER_SA}"]
+    policy = MagicMock()
+    policy.bindings = [binding]
+    client.get_iam_policy.return_value = policy
+
+    ensure_runner_permissions()
+
+    client.set_iam_policy.assert_not_called()
 
 
 @patch("scheduler.EventEnricher")

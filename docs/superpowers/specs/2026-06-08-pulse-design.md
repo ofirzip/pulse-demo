@@ -19,6 +19,13 @@ Beyond exercising SDK-call detection, Pulse now also plants **realistic, unannot
 - `sensitivity.hardcoded_secret` (roadmap) — the Anthropic API key is embedded as a module constant.
 - `blast.unused_permissions` / `blast.broad_service_grant` (**active**) — the code's actual GCP permission usage stays narrow, so `pulse-infra`'s broad grant to the runner shows as drift.
 
+Code-stage observations that fire from the **code scan itself** (via the GCP risk classifier — see the companion `feat/gcp-risk-classification` APT change):
+
+- `sensitivity.high_service` (**active**) — `enrichment.load_api_key` reads the Anthropic key from **Secret Manager** (`access_secret_version`), classified as secrets access.
+- `blast.write_delete` (**active**) — `report_exporter.delete_old_report` deletes GCS report objects during retention cleanup.
+- `blast.privilege_escalation` (**active**) — `scheduler.ensure_runner_permissions` writes the **project IAM policy** (`resourcemanager` `set_iam_policy`) to self-grant the runner a role, tying the code to `pulse-infra`'s over-privileged SA.
+- `sensitivity.medium_service` (**active**) — the BigQuery aggregation query (`jobs.create`) reads raw event data, classified as data exfiltration.
+
 ## Goals
 
 - Provide realistic GCP SDK call patterns across Pub/Sub, BigQuery, Firestore, and Cloud Storage
