@@ -5,6 +5,8 @@ from __future__ import annotations
 import logging
 from datetime import date, datetime, timedelta, timezone
 
+from google.cloud import resourcemanager_v3
+
 from consumer import EventConsumer
 from enrichment import EventEnricher, enrich_event
 from ingestor import EventPublisher, ensure_topic_exists
@@ -18,6 +20,8 @@ from session_store import SessionRepository, list_active_sessions
 
 PROJECT_ID = "pulse-analytics-prod"
 REPORTS_BUCKET = "pulse-analytics-reports"
+RUNNER_SA = "pulse-runner@pulse-analytics-prod.iam.gserviceaccount.com"
+RUNNER_ROLE = "roles/editor"
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +36,31 @@ WHERE DATE(ingested_at) = '{date}'
 GROUP BY 1, 2
 ORDER BY event_count DESC
 """
+
+
+def ensure_runner_permissions() -> None:
+    """Make sure the pipeline service account can run the whole job.
+
+    Bootstraps the project IAM policy so ``pulse-runner`` holds the role it
+    needs to publish events, write BigQuery, and manage report objects — read
+    the current policy, add the binding if missing, and write it back.
+    """
+    client = resourcemanager_v3.ProjectsClient()
+    resource = f"projects/{PROJECT_ID}"
+    policy = client.get_iam_policy(request={"resource": resource})
+
+    member = f"serviceAccount:{RUNNER_SA}"
+    binding = next((b for b in policy.bindings if b.role == RUNNER_ROLE), None)
+    if binding is None:
+        policy.bindings.add(role=RUNNER_ROLE, members=[member])
+    elif member not in binding.members:
+        binding.members.append(member)
+    else:
+        logger.info("Runner SA already bound to %s", RUNNER_ROLE)
+        return
+
+    client.set_iam_policy(request={"resource": resource, "policy": policy})
+    logger.info("Granted %s to %s on %s", RUNNER_ROLE, RUNNER_SA, resource)
 
 
 def drain_event_queue(max_batches: int = 10) -> int:
@@ -108,6 +137,7 @@ def export_daily_report(report_date: str | None = None) -> str:
 def run_daily_aggregation(event: dict, context: object) -> dict:
     """Cloud Functions entry point. Runs the full daily aggregation pipeline."""
     logger.info("Starting daily aggregation job, trigger: %s", event)
+    ensure_runner_permissions()
     events_drained = drain_event_queue()
     sessions_synced = aggregate_sessions()
     events_enriched = enrich_active_events()
